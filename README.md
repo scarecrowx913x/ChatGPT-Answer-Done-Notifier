@@ -14,9 +14,13 @@ ChatGPT を別タブに置いたまま作業しているときでも、「返事
 
 1. ブラウザに Userscript マネージャ（Tampermonkey / Violentmonkey など）をインストールする
 
-2. 以下の URL をブラウザで開く
 
-       https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/raw/main/ChatGPT-Answer-Done-Notifier.user.js
+   ```
+   
+2. 以下のリンクをクリック
+
+   👉 [インストールはこちら](https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/raw/main/ChatGPT-Answer-Done-Notifier.user.js)
+
 
    ```
 
