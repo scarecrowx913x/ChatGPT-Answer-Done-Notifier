@@ -22,6 +22,9 @@ ChatGPT を別タブに置いたまま作業しているときでも、「返事
    👉 [インストールはこちら](https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/raw/main/ChatGPT-Answer-Done-Notifier.user.js)
 
 
+**コピペ用URL**  
+https://raw.githubusercontent.com/scarecrowx913x/ChatGPT-Prompt-UI-Launcher/main/ChatGPT-Prompt-UI-Launcher.user.js
+
 
    ```
 
