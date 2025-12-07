@@ -17,7 +17,8 @@ ChatGPT を別タブに置いたまま作業しているときでも、「返事
 2. 以下の URL をブラウザで開く
 
    ```text
-   https://github.com/scarecrowx913x/scarecrowx913x-ChatGPT-Answer-Done-Notifier/blob/main/ChatGPT-Answer-Done-Notifier.user.js
+  [ [https://github.com/scarecrowx913x/scarecrowx913x-ChatGPT-Answer-Done-Notifier/blob/main/ChatGPT-Answer-Done-Notifier.user.js](https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/raw/refs/heads/main/ChatGPT-Answer-Done-Notifier.user.js)](https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/raw/refs/heads/main/ChatGPT-Answer-Done-Notifier.user.js)
+   
    ```
 
 3. Userscript マネージャのインストール画面が出るので、「インストール」を選ぶ
