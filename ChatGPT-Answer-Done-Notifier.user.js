@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name        ChatGPT Answer Done Notifier
 // @namespace   https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier
-// @version     1.2.0
+// @version     1.3.0
 // @description ChatGPTの回答完了を検知して、ビープ音＋デスクトップ通知＋ファビコンの緑●バッジで知らせるシンプル通知スクリプト
 // @author      scarecrowx913x
 // @match       https://chatgpt.com/*
 // @match       https://chat.openai.com/*
 // @grant       GM_getValue
 // @grant       GM_setValue
+// @grant       GM_getClipboard
 // @grant       GM_registerMenuCommand
 // @run-at      document-idle
 // @noframes
@@ -34,6 +35,7 @@
   // 音・通知の個別ON/OFFフラグ（デフォルトは両方ON）
   var soundEnabled = GM_getValue('gptNotifier_soundEnabled', true);
   var notificationEnabled = GM_getValue('gptNotifier_notificationEnabled', true);
+  var autoPasteEnabled = GM_getValue('gptNotifier_autoPasteEnabled', true);
 
   // Observer を二重で付けないためのフラグ
   var observerInitialized = false;
@@ -81,7 +83,17 @@
       }
     );
 
-    log('メニュー登録済み（音:' + (soundEnabled ? 'ON' : 'OFF') + ', 通知:' + (notificationEnabled ? 'ON' : 'OFF') + '）');
+    GM_registerMenuCommand(
+      '自動貼り付けのON/OFFを切り替える',
+      function () {
+        autoPasteEnabled = !autoPasteEnabled;
+        GM_setValue('gptNotifier_autoPasteEnabled', autoPasteEnabled);
+        alert('ChatGPTの自動貼り付けは今 ' + (autoPasteEnabled ? 'ON' : 'OFF') + ' です');
+        log('自動貼り付けの状態を切り替えました →', autoPasteEnabled ? 'ON' : 'OFF');
+      }
+    );
+
+    log('メニュー登録済み（音:' + (soundEnabled ? 'ON' : 'OFF') + ', 通知:' + (notificationEnabled ? 'ON' : 'OFF') + ', 自動貼り付け:' + (autoPasteEnabled ? 'ON' : 'OFF') + '）');
   }
 
   function setupObserver() {
@@ -183,6 +195,97 @@
     } else {
       log('デスクトップ通知はOFFなのでスキップ（ファビコンバッジも付けない）');
     }
+
+    if (autoPasteEnabled) {
+      pasteClipboardToComposer();
+    } else {
+      log('自動貼り付けはOFFなのでスキップ');
+    }
+  }
+
+  function getComposerElement() {
+    return document.querySelector('#prompt-textarea') ||
+      document.querySelector('textarea[placeholder]') ||
+      document.querySelector('[data-testid="prompt-textarea"]') ||
+      document.querySelector('div.ProseMirror[contenteditable="true"]') ||
+      document.querySelector('div[contenteditable="true"][role="textbox"]');
+  }
+
+  function setNativeValue(el, value) {
+    var proto = Object.getPrototypeOf(el);
+    var descriptor = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(el, value);
+      return;
+    }
+    el.value = value;
+  }
+
+  function insertIntoComposer(target, text) {
+    if (!target || !text) return false;
+
+    target.focus();
+
+    var tag = target.tagName;
+    if (tag === 'TEXTAREA' || tag === 'INPUT') {
+      var current = target.value || '';
+      var next = current ? current + '\n' + text : text;
+      setNativeValue(target, next);
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    if (target.isContentEditable) {
+      var currentText = (target.textContent || '').trim();
+      target.textContent = currentText ? currentText + '\n' + text : text;
+      target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: text }));
+      return true;
+    }
+
+    return false;
+  }
+
+  function readClipboardText() {
+    if (typeof GM_getClipboard === 'function') {
+      try {
+        var gmText = GM_getClipboard();
+        if (typeof gmText === 'string') {
+          return Promise.resolve(gmText);
+        }
+      } catch (e) {
+        log('GM_getClipboard 失敗。navigator.clipboard を試行します。', e);
+      }
+    }
+
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      return navigator.clipboard.readText();
+    }
+
+    return Promise.reject(new Error('Clipboard API が利用できません'));
+  }
+
+  function pasteClipboardToComposer() {
+    readClipboardText()
+      .then(function (clipText) {
+        var text = (clipText || '').trim();
+        if (!text) {
+          log('クリップボードが空のため貼り付けをスキップ');
+          return;
+        }
+
+        var composer = getComposerElement();
+        if (!composer) {
+          log('入力欄が見つからないため貼り付けできませんでした');
+          return;
+        }
+
+        var success = insertIntoComposer(composer, text);
+        log(success ? 'クリップボード内容を入力欄へ貼り付けました' : '入力欄への貼り付けに失敗しました');
+      })
+      .catch(function (e) {
+        log('クリップボード読み取りに失敗したため貼り付けできませんでした', e);
+      });
   }
 
   function getAudioCtx() {

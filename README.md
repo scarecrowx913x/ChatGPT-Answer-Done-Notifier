@@ -49,10 +49,11 @@ https://raw.githubusercontent.com/scarecrowx913x/ChatGPT-Prompt-UI-Launcher/main
 
 Userscript マネージャ（Tampermonkey など）の拡張機能アイコンから、このスクリプトのメニューを開くと
 
-* `通知機能のON/OFFを切り替える`
+* `ビープ音のON/OFFを切り替える`
+* `デスクトップ通知のON/OFFを切り替える`
+* `自動貼り付けのON/OFFを切り替える`
 
-という項目が表示されます。
-ここから通知全体を一括で ON / OFF できます。
+という項目が表示されます。機能ごとに ON / OFF を切り替えできます。
 状態はブラウザ側に保存され、ページを閉じても保持されます。
 
 ---
