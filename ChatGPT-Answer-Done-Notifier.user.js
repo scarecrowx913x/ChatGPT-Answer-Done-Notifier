@@ -1,15 +1,15 @@
 // ==UserScript==
-// @name        ChatGPT Answer Done Notifier
-// @namespace   https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier
-// @version     1.2.0
-// @description ChatGPTの回答完了を検知して、ビープ音＋デスクトップ通知＋ファビコンの緑●バッジで知らせるシンプル通知スクリプト
-// @author      scarecrowx913x
-// @match       https://chatgpt.com/*
-// @match       https://chat.openai.com/*
-// @grant       GM_getValue
-// @grant       GM_setValue
-// @grant       GM_registerMenuCommand
-// @run-at      document-idle
+// @name         ChatGPT Answer Done Notifier
+// @namespace    https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier
+// @version      1.3.0
+// @description  ChatGPTの回答完了を検知して、ビープ音＋デスクトップ通知＋ファビコンの緑●バッジで知らせるシンプル通知スクリプト
+// @author       scarecrowx913x
+// @match        https://chatgpt.com/*
+// @match        https://chat.openai.com/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @run-at       document-idle
 // @noframes
 // ==/UserScript==
 
@@ -17,7 +17,7 @@
   'use strict';
 
   // どれくらい変化が止まったら「完了」とみなすか（ミリ秒）
-  var QUIET_MS = 2500; // ちょっと長めにして、途中の小休止で誤爆しにくく
+  var QUIET_MS = 2500;
 
   // 同じ回答で何度も鳴らないようにするクールダウン（ミリ秒）
   var COOLDOWN_MS = 2000;
@@ -46,7 +46,6 @@
   var faviconBadged = false;
 
   // ChatGPTのアシスタントメッセージっぽい要素を拾うためのセレクタ
-  // UI変更に強くするため、よく使われる属性をまとめて見る
   var ASSISTANT_SELECTOR = [
     '[data-message-author-role="assistant"]',
     '[data-message-author-role*=assistant]',
@@ -54,12 +53,30 @@
     '[data-testid="assistant-message"]'
   ].join(',');
 
+  // 生成中に表示される「Stop」ボタンのセレクタ（複数フォールバック）
+  // v1.3.0: Thinkingモードでの多重通知を防ぐために追加
+  var STOP_BUTTON_SELECTOR = [
+    'button[data-testid="stop-button"]',
+    'button[aria-label="Stop generating"]',
+    'button[aria-label="生成を停止"]',
+    '[data-testid="stop-streaming-button"]'
+  ].join(',');
+
+  // 生成完了後に表示されるボタン（コピー、評価など）のセレクタ
+  // v1.3.0: 完了確認の二重チェックに使用
+  var COMPLETION_BUTTON_SELECTOR = [
+    'button[data-testid="copy-turn-action-button"]',
+    'button[data-testid="good-response-turn-action-button"]',
+    'button[aria-label*="Copy"]',
+    'button[aria-label*="コピー"]'
+  ].join(',');
+
   // 共通ログ
   function log() {
     console.log.apply(console, ['[GPT-Notifier]'].concat(Array.from(arguments)));
   }
 
-  // Tampermonkey のメニュー登録（音・通知を個別に制御）
+  // Tampermonkey/ViolentMonkey のメニュー登録
   function setupMenu() {
     GM_registerMenuCommand(
       'ビープ音のON/OFFを切り替える',
@@ -84,8 +101,54 @@
     log('メニュー登録済み（音:' + (soundEnabled ? 'ON' : 'OFF') + ', 通知:' + (notificationEnabled ? 'ON' : 'OFF') + '）');
   }
 
+  // -------------------------------------------------------
+  // v1.3.0: 生成中かどうかをStopボタンの有無で判定
+  // Thinkingモードでは「思考フェーズ→回答フェーズ」の切れ目に
+  // 一時的なDOM静止が発生するが、Stopボタンはまだ表示されている。
+  // これを使うことで、静止=完了の誤判定を防ぐ。
+  // -------------------------------------------------------
+  function isGenerating() {
+    return !!document.querySelector(STOP_BUTTON_SELECTOR);
+  }
+
+  // -------------------------------------------------------
+  // v1.3.0: 完了後ボタン（コピー等）が最後のアシスタントメッセージに
+  // 出現しているかどうかで完了を二重確認
+  // -------------------------------------------------------
+  function hasCompletionButtons() {
+    var lastMsg = document.querySelector('[data-message-author-role="assistant"]:last-child');
+    if (!lastMsg) return false;
+    return !!lastMsg.querySelector(COMPLETION_BUTTON_SELECTOR);
+  }
+
+  // -------------------------------------------------------
+  // v1.3.0: 完了判定を独立した関数に切り出し
+  // Stopボタンがまだある場合は500msごとに再チェックする。
+  // Thinkingモードの「思考→回答」の空白期間をこれで乗り越える。
+  // -------------------------------------------------------
+  function checkCompletion() {
+    // 静止時間がまだ足りない場合はスキップ
+    if (Date.now() - lastMutationTime < QUIET_MS) return;
+
+    // Stopボタンが残っていればまだ生成中（Thinkingモードの思考→回答の空白 or フェーズ切替）
+    if (isGenerating()) {
+      log('Stopボタンが残っているため待機中（Thinkingモード対応）...');
+      doneTimer = setTimeout(checkCompletion, 500);
+      return;
+    }
+
+    // 完了後ボタンが出ていればより確実に完了と判断（出ていなくても通知はする）
+    if (hasCompletionButtons()) {
+      log('完了ボタン確認 → 回答完了と判定');
+    } else {
+      log('完了ボタン未確認だが、Stopボタンも消えているため完了と判定');
+    }
+
+    notifyDone();
+    isAnswering = false;
+  }
+
   function setupObserver() {
-    // 二重に仕掛けないようにガード
     if (observerInitialized) {
       log('Observerは既に初期化済みなのでスキップ');
       return;
@@ -109,7 +172,6 @@
         var node = m.target;
         var el = null;
 
-        // テキストノード(characterData)も拾う
         if (node.nodeType === Node.TEXT_NODE) {
           el = node.parentElement;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
@@ -120,7 +182,6 @@
 
         if (!el) continue;
 
-        // アシスタントメッセージの中 or その近辺かどうか判定
         var host = el.closest(ASSISTANT_SELECTOR);
         if (host) {
           touchedAssistant = true;
@@ -130,7 +191,6 @@
 
       if (!touchedAssistant) return;
 
-      // 初めての変化なら「この回答の開始」をマーク
       if (!isAnswering) {
         isAnswering = true;
         log('回答開始っぽい変化を検知');
@@ -140,14 +200,9 @@
 
       if (doneTimer) clearTimeout(doneTimer);
 
-      doneTimer = setTimeout(function () {
-        // 直近の変化からQUIET_MS以上たっていたら「完了」とみなす
-        if (Date.now() - lastMutationTime >= QUIET_MS) {
-          notifyDone();
-          // 次の回答のためにリセット
-          isAnswering = false;
-        }
-      }, QUIET_MS + 150);
+      // v1.3.0: インライン関数→ checkCompletion() に変更
+      // Thinkingモード対応のため、Stopボタンの有無を繰り返しチェックする
+      doneTimer = setTimeout(checkCompletion, QUIET_MS + 150);
     });
 
     observer.observe(target, {
@@ -169,14 +224,12 @@
 
     log('回答完了と判定 → 通知処理を実行');
 
-    // ビープ音（個別ON/OFF）
     if (soundEnabled) {
       playBeep();
     } else {
       log('ビープ音はOFFなのでスキップ');
     }
 
-    // デスクトップ通知＆ファビコンバッジ（個別ON/OFF）
     if (notificationEnabled) {
       showNotification();
       setFaviconBadge(true);
@@ -193,7 +246,6 @@
     return audioCtx;
   }
 
-  // 単純な「ピッ」を1回鳴らす
   function playBeep() {
     try {
       var ctx = getAudioCtx();
@@ -203,7 +255,7 @@
       var gain = ctx.createGain();
 
       osc.type = 'sine';
-      osc.frequency.value = 880; // 高めの「ピッ」
+      osc.frequency.value = 880;
 
       osc.connect(gain);
       gain.connect(ctx.destination);
@@ -219,11 +271,10 @@
     }
   }
 
-  // 現在のfavicon <link> を取得（なければ作る）
   function getFaviconLink() {
     var link = document.querySelector('link[rel="icon"]') ||
-               document.querySelector('link[rel="shortcut icon"]') ||
-               document.querySelector('link[rel*="icon"]');
+      document.querySelector('link[rel="shortcut icon"]') ||
+      document.querySelector('link[rel*="icon"]');
     if (!link) {
       link = document.createElement('link');
       link.rel = 'icon';
@@ -232,7 +283,6 @@
     return link;
   }
 
-  // ファビコンに●バッジを付ける / 戻す
   function setFaviconBadge(active) {
     var link = getFaviconLink();
     if (!link) return;
@@ -255,11 +305,9 @@
     canvas.height = size;
     var ctx = canvas.getContext('2d');
 
-    // 背景を少し暗めで塗る
     ctx.fillStyle = '#020617';
     ctx.fillRect(0, 0, size, size);
 
-    // 真ん中に●バッジ
     ctx.beginPath();
     ctx.arc(size / 2, size / 2, size * 0.35, 0, Math.PI * 2, false);
     ctx.fillStyle = '#22c55e';
@@ -290,10 +338,8 @@
     setTimeout(setupObserver, 2000);
   });
 
-  // 念のため保険でもう一度（observerInitialized で二重起動は防止）
   setTimeout(setupObserver, 5000);
 
-  // タブに戻ってきたらファビコンバッジを消す
   window.addEventListener('focus', clearFaviconBadge);
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden) {
@@ -301,6 +347,5 @@
     }
   });
 
-  // メニュー登録
   setupMenu();
 })();
