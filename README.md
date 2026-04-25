@@ -23,7 +23,7 @@ ChatGPT を別タブに置いたまま作業しているときでも、「返事
 
 
 **コピペ用URL**  
-https://raw.githubusercontent.com/scarecrowx913x/ChatGPT-Prompt-UI-Launcher/main/ChatGPT-Prompt-UI-Launcher.user.js
+https://raw.githubusercontent.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/main/ChatGPT-Answer-Done-Notifier.user.js
 
 
 
@@ -49,10 +49,11 @@ https://raw.githubusercontent.com/scarecrowx913x/ChatGPT-Prompt-UI-Launcher/main
 
 Userscript マネージャ（Tampermonkey など）の拡張機能アイコンから、このスクリプトのメニューを開くと
 
-* `通知機能のON/OFFを切り替える`
+* `ビープ音のON/OFFを切り替える`
+* `デスクトップ通知のON/OFFを切り替える`
 
-という項目が表示されます。
-ここから通知全体を一括で ON / OFF できます。
+という 2 項目が表示されます。
+ここから音とデスクトップ通知を個別に ON / OFF できます。
 状態はブラウザ側に保存され、ページを閉じても保持されます。
 
 ---

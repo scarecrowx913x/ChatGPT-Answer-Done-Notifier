@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Answer Done Notifier
 // @namespace    https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier
-// @version      1.3.0
+// @version      1.3.1
 // @description  ChatGPTの回答完了を検知して、ビープ音＋デスクトップ通知＋ファビコンの緑●バッジで知らせるシンプル通知スクリプト
 // @author       scarecrowx913x
 // @match        https://chatgpt.com/*
@@ -115,8 +115,14 @@
   // v1.3.0: 完了後ボタン（コピー等）が最後のアシスタントメッセージに
   // 出現しているかどうかで完了を二重確認
   // -------------------------------------------------------
+  function getLastAssistantMessage() {
+    var messages = document.querySelectorAll(ASSISTANT_SELECTOR);
+    if (!messages || messages.length === 0) return null;
+    return messages[messages.length - 1];
+  }
+
   function hasCompletionButtons() {
-    var lastMsg = document.querySelector('[data-message-author-role="assistant"]:last-child');
+    var lastMsg = getLastAssistantMessage();
     if (!lastMsg) return false;
     return !!lastMsg.querySelector(COMPLETION_BUTTON_SELECTOR);
   }
@@ -231,8 +237,13 @@
     }
 
     if (notificationEnabled) {
-      showNotification();
-      setFaviconBadge(true);
+      // 通知とバッジはタブが非アクティブ時だけ表示する
+      if (document.hidden) {
+        showNotification();
+        setFaviconBadge(true);
+      } else {
+        log('タブがアクティブのため、デスクトップ通知とファビコンバッジはスキップ');
+      }
     } else {
       log('デスクトップ通知はOFFなのでスキップ（ファビコンバッジも付けない）');
     }
