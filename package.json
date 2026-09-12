@@ -1,0 +1,11 @@
+{
+  "name": "chatgpt-answer-done-notifier",
+  "private": true,
+  "scripts": {
+    "check": "node --check ChatGPT-Answer-Done-Notifier.user.js",
+    "test": "node --test test/notifier.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "25.0.1"
+  }
+}
