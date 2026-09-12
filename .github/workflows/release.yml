@@ -1,0 +1,88 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release target
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          SCRIPT="ChatGPT-Answer-Done-Notifier.user.js"
+          VERSION="$(sed -n 's|^// @version[[:space:]]*||p' "$SCRIPT" | head -n1 | tr -d '\r')"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid @version: $VERSION" >&2
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping."
+            echo "create=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          RELEASE_SHA="$GITHUB_SHA"
+
+          # Bootstrap only: when this workflow is introduced for the first time,
+          # keep the pending release pointed at the commit where the current
+          # Userscript version first entered main, rather than at this workflow-only commit.
+          if ! git cat-file -e "HEAD^:.github/workflows/release.yml" 2>/dev/null; then
+            RELEASE_SHA=""
+            while read -r SHA; do
+              FILE_VERSION="$(git show "$SHA:$SCRIPT" 2>/dev/null | sed -n 's|^// @version[[:space:]]*||p' | head -n1 | tr -d '\r' || true)"
+              if [ "$FILE_VERSION" = "$VERSION" ]; then
+                RELEASE_SHA="$SHA"
+              else
+                break
+              fi
+            done < <(git rev-list --first-parent HEAD)
+
+            if [ -z "$RELEASE_SHA" ]; then
+              echo "Could not resolve bootstrap release target for $TAG" >&2
+              exit 1
+            fi
+          fi
+
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+            if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+              echo "Tag $TAG already points to $TAG_SHA, expected $RELEASE_SHA" >&2
+              exit 1
+            fi
+          fi
+
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "create=true" >> "$GITHUB_OUTPUT"
+          echo "Will create $TAG at $RELEASE_SHA"
+
+      - name: Create GitHub Release
+        if: steps.release.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.release.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "${{ steps.release.outputs.sha }}" \
+            --title "${{ steps.release.outputs.tag }}" \
+            --generate-notes
