@@ -420,12 +420,14 @@
       log('クールダウン中のため通知スキップ');
       return;
     }
-    lastNotifiedAt = now;
 
     log('回答完了と判定 → 通知処理を実行');
 
+    var notified = false;
+
     if (soundEnabled) {
       playBeep();
+      notified = true;
     } else {
       log('ビープ音はOFFなのでスキップ');
     }
@@ -434,11 +436,18 @@
       if (document.hidden) {
         showNotification();
         setFaviconBadge(true);
+        notified = true;
       } else {
         log('タブがアクティブのため、デスクトップ通知とファビコンバッジはスキップ');
       }
     } else {
       log('デスクトップ通知はOFFなのでスキップ（ファビコンバッジも付けない）');
+    }
+
+    if (notified) {
+      lastNotifiedAt = now;
+    } else {
+      log('通知手段を実行していないためcooldownは消費しない');
     }
   }
 
