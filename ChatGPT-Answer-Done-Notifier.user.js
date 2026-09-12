@@ -37,6 +37,8 @@
   var completedTurnIds = new Set();
   var fallbackTurnIds = new WeakMap();
   var fallbackTurnSequence = 0;
+  var generationObserved = false;
+  var observedLocation = window.location.href;
 
   var ASSISTANT_SELECTOR = [
     '[data-message-author-role="assistant"]',
@@ -89,6 +91,49 @@
 
   function isGenerating() {
     return !!document.querySelector(STOP_BUTTON_SELECTOR);
+  }
+
+  function nodeContainsStopButton(node) {
+    var el = null;
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    }
+
+    if (!el) return false;
+    if (el.matches && el.matches(STOP_BUTTON_SELECTOR)) return true;
+    return !!(el.querySelector && el.querySelector(STOP_BUTTON_SELECTOR));
+  }
+
+  function mutationsShowGeneration(mutations) {
+    if (isGenerating()) return true;
+
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (!m.addedNodes || !m.addedNodes.length) continue;
+
+      for (var j = 0; j < m.addedNodes.length; j++) {
+        if (nodeContainsStopButton(m.addedNodes[j])) return true;
+      }
+    }
+
+    return false;
+  }
+
+  function resetTrackingOnNavigation() {
+    var currentLocation = window.location.href;
+    if (currentLocation === observedLocation) return;
+
+    observedLocation = currentLocation;
+    activeTurn = null;
+    generationObserved = false;
+    if (doneTimer) {
+      clearTimeout(doneTimer);
+      doneTimer = null;
+    }
+    log('SPA画面遷移を検知 → turn追跡をリセット');
   }
 
   function canonicalizeAssistantHost(message) {
@@ -145,6 +190,12 @@
     }
 
     if (!activeTurn || activeTurn.id !== turnId) {
+      // 新しいturn開始には生成中シグナルが必要。
+      // SPA遷移で過去会話一式が追加された場合はStopボタンがないため誤通知しない。
+      if (!generationObserved) {
+        return false;
+      }
+
       activeTurn = {
         id: turnId,
         element: message
@@ -170,11 +221,13 @@
     if (!lastMessage || lastTurnId !== activeTurn.id) {
       log('active turnが最新ではないため完了判定を破棄 →', activeTurn.id);
       activeTurn = null;
+      generationObserved = false;
       return;
     }
 
     if (completedTurnIds.has(activeTurn.id)) {
       activeTurn = null;
+      generationObserved = false;
       return;
     }
 
@@ -194,6 +247,7 @@
     notifyDone();
     log('assistant turn完了 →', activeTurn.id);
     activeTurn = null;
+    generationObserved = false;
   }
 
   function getAssistantHostFromTarget(node) {
@@ -264,6 +318,11 @@
     var observer = new MutationObserver(function (mutations) {
       var now = Date.now();
       var touchedActiveTurn = false;
+
+      resetTrackingOnNavigation();
+      if (mutationsShowGeneration(mutations)) {
+        generationObserved = true;
+      }
 
       for (var i = 0; i < mutations.length; i++) {
         var m = mutations[i];
