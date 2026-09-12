@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Answer Done Notifier
 // @namespace    https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier
-// @version      1.3.1
+// @version      1.4.0
 // @description  ChatGPTの回答完了を検知して、ビープ音＋デスクトップ通知＋ファビコンの緑●バッジで知らせるシンプル通知スクリプト
 // @author       scarecrowx913x
 // @match        https://chatgpt.com/*
@@ -16,45 +16,37 @@
 (function () {
   'use strict';
 
-  // どれくらい変化が止まったら「完了」とみなすか（ミリ秒）
   var QUIET_MS = 2500;
-
-  // 同じ回答で何度も鳴らないようにするクールダウン（ミリ秒）
   var COOLDOWN_MS = 2000;
 
   var lastMutationTime = 0;
   var doneTimer = null;
-
-  // 回答が進行中かどうか
-  var isAnswering = false;
-
-  // 直近で通知した時刻
   var lastNotifiedAt = 0;
 
-  // 音・通知の個別ON/OFFフラグ（デフォルトは両方ON）
   var soundEnabled = GM_getValue('gptNotifier_soundEnabled', true);
   var notificationEnabled = GM_getValue('gptNotifier_notificationEnabled', true);
 
-  // Observer を二重で付けないためのフラグ
   var observerInitialized = false;
-
-  // AudioContext を1つだけ使い回す
   var audioCtx = null;
-
-  // 元のファビコンとバッジ状態
   var originalFaviconHref = null;
   var faviconBadged = false;
 
-  // ChatGPTのアシスタントメッセージっぽい要素を拾うためのセレクタ
+  // 回答単位の状態を追跡する。
+  // data-message-id がある場合はそれをturn IDとして使い、ない場合だけDOM要素単位のIDを割り当てる。
+  var activeTurn = null;
+  var completedTurnIds = new Set();
+  var fallbackTurnIds = new WeakMap();
+  var fallbackTurnSequence = 0;
+  var generationObserved = false;
+  var observedLocation = window.location.href;
+
   var ASSISTANT_SELECTOR = [
     '[data-message-author-role="assistant"]',
     '[data-message-author-role*=assistant]',
-    '[data-message-id][data-message-author-role]',
+    '[data-message-id][data-message-author-role="assistant"]',
     '[data-testid="assistant-message"]'
   ].join(',');
 
-  // 生成中に表示される「Stop」ボタンのセレクタ（複数フォールバック）
-  // v1.3.0: Thinkingモードでの多重通知を防ぐために追加
   var STOP_BUTTON_SELECTOR = [
     'button[data-testid="stop-button"]',
     'button[aria-label="Stop generating"]',
@@ -62,8 +54,6 @@
     '[data-testid="stop-streaming-button"]'
   ].join(',');
 
-  // 生成完了後に表示されるボタン（コピー、評価など）のセレクタ
-  // v1.3.0: 完了確認の二重チェックに使用
   var COMPLETION_BUTTON_SELECTOR = [
     'button[data-testid="copy-turn-action-button"]',
     'button[data-testid="good-response-turn-action-button"]',
@@ -71,12 +61,10 @@
     'button[aria-label*="コピー"]'
   ].join(',');
 
-  // 共通ログ
   function log() {
     console.log.apply(console, ['[GPT-Notifier]'].concat(Array.from(arguments)));
   }
 
-  // Tampermonkey/ViolentMonkey のメニュー登録
   function setupMenu() {
     GM_registerMenuCommand(
       'ビープ音のON/OFFを切り替える',
@@ -101,57 +89,255 @@
     log('メニュー登録済み（音:' + (soundEnabled ? 'ON' : 'OFF') + ', 通知:' + (notificationEnabled ? 'ON' : 'OFF') + '）');
   }
 
-  // -------------------------------------------------------
-  // v1.3.0: 生成中かどうかをStopボタンの有無で判定
-  // Thinkingモードでは「思考フェーズ→回答フェーズ」の切れ目に
-  // 一時的なDOM静止が発生するが、Stopボタンはまだ表示されている。
-  // これを使うことで、静止=完了の誤判定を防ぐ。
-  // -------------------------------------------------------
   function isGenerating() {
     return !!document.querySelector(STOP_BUTTON_SELECTOR);
   }
 
-  // -------------------------------------------------------
-  // v1.3.0: 完了後ボタン（コピー等）が最後のアシスタントメッセージに
-  // 出現しているかどうかで完了を二重確認
-  // -------------------------------------------------------
+  function nodeContainsStopButton(node) {
+    var el = null;
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    }
+
+    if (!el) return false;
+    if (el.matches && el.matches(STOP_BUTTON_SELECTOR)) return true;
+    return !!(el.querySelector && el.querySelector(STOP_BUTTON_SELECTOR));
+  }
+
+  function mutationsShowGeneration(mutations) {
+    if (isGenerating()) return true;
+
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (!m.addedNodes || !m.addedNodes.length) continue;
+
+      for (var j = 0; j < m.addedNodes.length; j++) {
+        if (nodeContainsStopButton(m.addedNodes[j])) return true;
+      }
+    }
+
+    return false;
+  }
+
+  function mutationsRemoveStopButton(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (!m.removedNodes || !m.removedNodes.length) continue;
+
+      for (var j = 0; j < m.removedNodes.length; j++) {
+        if (nodeContainsStopButton(m.removedNodes[j])) return true;
+      }
+    }
+
+    return false;
+  }
+
+  function addedNodeContainsAssistant(node) {
+    var el = null;
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    }
+
+    if (!el) return false;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) return true;
+    return !!(el.querySelector && el.querySelector(ASSISTANT_SELECTOR));
+  }
+
+  function mutationsAddAssistant(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (!m.addedNodes || !m.addedNodes.length) continue;
+
+      for (var j = 0; j < m.addedNodes.length; j++) {
+        if (addedNodeContainsAssistant(m.addedNodes[j])) return true;
+      }
+    }
+
+    return false;
+  }
+
+  function resetTrackingOnNavigation() {
+    var currentLocation = window.location.href;
+    if (currentLocation === observedLocation) return;
+
+    observedLocation = currentLocation;
+    activeTurn = null;
+    generationObserved = false;
+    if (doneTimer) {
+      clearTimeout(doneTimer);
+      doneTimer = null;
+    }
+    log('SPA画面遷移を検知 → turn追跡をリセット');
+  }
+
+  function canonicalizeAssistantHost(message) {
+    if (!message) return null;
+
+    var canonical = message;
+    var parent = canonical.parentElement;
+    while (parent) {
+      if (parent.matches && parent.matches(ASSISTANT_SELECTOR)) {
+        canonical = parent;
+      }
+      parent = parent.parentElement;
+    }
+    return canonical;
+  }
+
   function getLastAssistantMessage() {
     var messages = document.querySelectorAll(ASSISTANT_SELECTOR);
     if (!messages || messages.length === 0) return null;
-    return messages[messages.length - 1];
+    return canonicalizeAssistantHost(messages[messages.length - 1]);
   }
 
-  function hasCompletionButtons() {
-    var lastMsg = getLastAssistantMessage();
-    if (!lastMsg) return false;
-    return !!lastMsg.querySelector(COMPLETION_BUTTON_SELECTOR);
+  function getTurnId(message) {
+    if (!message) return null;
+
+    var messageId = message.getAttribute('data-message-id');
+    if (messageId) return 'message:' + messageId;
+
+    if (!fallbackTurnIds.has(message)) {
+      fallbackTurnSequence += 1;
+      fallbackTurnIds.set(message, 'element:' + fallbackTurnSequence);
+    }
+    return fallbackTurnIds.get(message);
   }
 
-  // -------------------------------------------------------
-  // v1.3.0: 完了判定を独立した関数に切り出し
-  // Stopボタンがまだある場合は500msごとに再チェックする。
-  // Thinkingモードの「思考→回答」の空白期間をこれで乗り越える。
-  // -------------------------------------------------------
+  function hasCompletionButtons(message) {
+    if (!message) return false;
+    return !!message.querySelector(COMPLETION_BUTTON_SELECTOR);
+  }
+
+  function beginOrContinueTurn(message, now) {
+    if (!message) return false;
+
+    message = canonicalizeAssistantHost(message);
+    var lastMessage = getLastAssistantMessage();
+    if (lastMessage !== message) {
+      // 過去回答の再描画やボタン追加は回答開始として扱わない。
+      return false;
+    }
+
+    var turnId = getTurnId(message);
+    if (!turnId || completedTurnIds.has(turnId)) {
+      return false;
+    }
+
+    if (!activeTurn || activeTurn.id !== turnId) {
+      // 新しいturn開始には生成中シグナルが必要。
+      // SPA遷移で過去会話一式が追加された場合はStopボタンがないため誤通知しない。
+      if (!generationObserved) {
+        return false;
+      }
+
+      activeTurn = {
+        id: turnId,
+        element: message
+      };
+      log('新しいassistant turnを検知 →', turnId);
+    } else {
+      activeTurn.element = message;
+    }
+
+    lastMutationTime = now;
+    return true;
+  }
+
   function checkCompletion() {
-    // 静止時間がまだ足りない場合はスキップ
+    if (!activeTurn) return;
+
     if (Date.now() - lastMutationTime < QUIET_MS) return;
 
-    // Stopボタンが残っていればまだ生成中（Thinkingモードの思考→回答の空白 or フェーズ切替）
+    var lastMessage = getLastAssistantMessage();
+    var lastTurnId = getTurnId(lastMessage);
+
+    // active turnが最新turnではなくなった場合、古いturnを完了通知しない。
+    if (!lastMessage || lastTurnId !== activeTurn.id) {
+      log('active turnが最新ではないため完了判定を破棄 →', activeTurn.id);
+      activeTurn = null;
+      generationObserved = false;
+      return;
+    }
+
+    if (completedTurnIds.has(activeTurn.id)) {
+      activeTurn = null;
+      generationObserved = false;
+      return;
+    }
+
     if (isGenerating()) {
       log('Stopボタンが残っているため待機中（Thinkingモード対応）...');
       doneTimer = setTimeout(checkCompletion, 500);
       return;
     }
 
-    // 完了後ボタンが出ていればより確実に完了と判断（出ていなくても通知はする）
-    if (hasCompletionButtons()) {
+    if (hasCompletionButtons(lastMessage)) {
       log('完了ボタン確認 → 回答完了と判定');
     } else {
       log('完了ボタン未確認だが、Stopボタンも消えているため完了と判定');
     }
 
+    completedTurnIds.add(activeTurn.id);
     notifyDone();
-    isAnswering = false;
+    log('assistant turn完了 →', activeTurn.id);
+    activeTurn = null;
+    generationObserved = false;
+  }
+
+  function getAssistantHostFromTarget(node) {
+    var el = null;
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    }
+
+    if (!el) return null;
+
+    var host = null;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) {
+      host = el;
+    } else if (el.closest) {
+      host = el.closest(ASSISTANT_SELECTOR);
+    }
+    return canonicalizeAssistantHost(host);
+  }
+
+  function getAssistantHostFromAddedNode(node) {
+    var el = null;
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    }
+
+    if (!el) return null;
+
+    var host = null;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) {
+      host = el;
+    } else if (el.closest) {
+      host = el.closest(ASSISTANT_SELECTOR);
+    }
+    if (host) return canonicalizeAssistantHost(host);
+
+    // 子孫探索は実際に追加されたノードだけに限定する。
+    // Mutation targetの祖先から既存の過去回答を拾う誤検知を防ぐ。
+    if (el.querySelectorAll) {
+      var descendants = el.querySelectorAll(ASSISTANT_SELECTOR);
+      if (descendants && descendants.length) {
+        return canonicalizeAssistantHost(descendants[descendants.length - 1]);
+      }
+    }
+    return null;
   }
 
   function setupObserver() {
@@ -171,43 +357,51 @@
 
     var observer = new MutationObserver(function (mutations) {
       var now = Date.now();
-      var touchedAssistant = false;
+      var touchedActiveTurn = false;
+
+      resetTrackingOnNavigation();
+      if (mutationsShowGeneration(mutations)) {
+        generationObserved = true;
+      }
+
+      // Stopボタンだけ観測した後、assistant turn生成前にキャンセル/失敗した場合、
+      // generationObservedを残さない。過去assistantの後続DOM変更を新規turnと誤認するのを防ぐ。
+      if (
+        generationObserved &&
+        !activeTurn &&
+        !isGenerating() &&
+        mutationsRemoveStopButton(mutations) &&
+        !mutationsAddAssistant(mutations)
+      ) {
+        generationObserved = false;
+        log('assistant turn開始前に生成終了 → generation stateをクリア');
+      }
 
       for (var i = 0; i < mutations.length; i++) {
         var m = mutations[i];
-        var node = m.target;
-        var el = null;
+        var targetHost = getAssistantHostFromTarget(m.target);
 
-        if (node.nodeType === Node.TEXT_NODE) {
-          el = node.parentElement;
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-          el = node;
-        } else {
-          continue;
-        }
-
-        if (!el) continue;
-
-        var host = el.closest(ASSISTANT_SELECTOR);
-        if (host) {
-          touchedAssistant = true;
+        if (targetHost && beginOrContinueTurn(targetHost, now)) {
+          touchedActiveTurn = true;
           break;
         }
+
+        if (m.addedNodes && m.addedNodes.length) {
+          for (var j = 0; j < m.addedNodes.length; j++) {
+            var addedHost = getAssistantHostFromAddedNode(m.addedNodes[j]);
+            if (addedHost && beginOrContinueTurn(addedHost, now)) {
+              touchedActiveTurn = true;
+              break;
+            }
+          }
+        }
+
+        if (touchedActiveTurn) break;
       }
 
-      if (!touchedAssistant) return;
-
-      if (!isAnswering) {
-        isAnswering = true;
-        log('回答開始っぽい変化を検知');
-      }
-
-      lastMutationTime = now;
+      if (!touchedActiveTurn) return;
 
       if (doneTimer) clearTimeout(doneTimer);
-
-      // v1.3.0: インライン関数→ checkCompletion() に変更
-      // Thinkingモード対応のため、Stopボタンの有無を繰り返しチェックする
       doneTimer = setTimeout(checkCompletion, QUIET_MS + 150);
     });
 
@@ -237,7 +431,6 @@
     }
 
     if (notificationEnabled) {
-      // 通知とバッジはタブが非アクティブ時だけ表示する
       if (document.hidden) {
         showNotification();
         setFaviconBadge(true);
