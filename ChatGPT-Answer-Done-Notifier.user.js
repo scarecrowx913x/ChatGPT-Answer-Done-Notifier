@@ -181,6 +181,42 @@
     activeTurn = null;
   }
 
+  function getAssistantHostFromTarget(node) {
+    var el = null;
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    }
+
+    if (!el) return null;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) return el;
+    if (el.closest) return el.closest(ASSISTANT_SELECTOR);
+    return null;
+  }
+
+  function getAssistantHostFromAddedNode(node) {
+    var el = null;
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    }
+
+    if (!el) return null;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) return el;
+
+    var closestHost = el.closest ? el.closest(ASSISTANT_SELECTOR) : null;
+    if (closestHost) return closestHost;
+
+    // 子孫探索は実際に追加されたノードだけに限定する。
+    // Mutation targetの祖先から既存の過去回答を拾う誤検知を防ぐ。
+    if (el.querySelector) return el.querySelector(ASSISTANT_SELECTOR);
+    return null;
+  }
+
   function setupObserver() {
     if (observerInitialized) {
       log('Observerは既に初期化済みなのでスキップ');
@@ -202,43 +238,20 @@
 
       for (var i = 0; i < mutations.length; i++) {
         var m = mutations[i];
-        var candidates = [];
+        var targetHost = getAssistantHostFromTarget(m.target);
 
-        if (m.target.nodeType === Node.TEXT_NODE && m.target.parentElement) {
-          candidates.push(m.target.parentElement);
-        } else if (m.target.nodeType === Node.ELEMENT_NODE) {
-          candidates.push(m.target);
+        if (targetHost && beginOrContinueTurn(targetHost, now)) {
+          touchedActiveTurn = true;
+          break;
         }
 
         if (m.addedNodes && m.addedNodes.length) {
           for (var j = 0; j < m.addedNodes.length; j++) {
-            var added = m.addedNodes[j];
-            if (added.nodeType === Node.TEXT_NODE && added.parentElement) {
-              candidates.push(added.parentElement);
-            } else if (added.nodeType === Node.ELEMENT_NODE) {
-              candidates.push(added);
+            var addedHost = getAssistantHostFromAddedNode(m.addedNodes[j]);
+            if (addedHost && beginOrContinueTurn(addedHost, now)) {
+              touchedActiveTurn = true;
+              break;
             }
-          }
-        }
-
-        for (var k = 0; k < candidates.length; k++) {
-          var el = candidates[k];
-          if (!el) continue;
-
-          var host = null;
-          if (el.matches && el.matches(ASSISTANT_SELECTOR)) {
-            host = el;
-          } else if (el.closest) {
-            host = el.closest(ASSISTANT_SELECTOR);
-          }
-
-          if (!host && el.querySelector) {
-            host = el.querySelector(ASSISTANT_SELECTOR);
-          }
-
-          if (host && beginOrContinueTurn(host, now)) {
-            touchedActiveTurn = true;
-            break;
           }
         }
 
