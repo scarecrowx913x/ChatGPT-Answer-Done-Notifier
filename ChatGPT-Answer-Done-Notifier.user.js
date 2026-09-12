@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Answer Done Notifier
 // @namespace    https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier
-// @version      1.3.1
+// @version      1.4.0
 // @description  ChatGPTの回答完了を検知して、ビープ音＋デスクトップ通知＋ファビコンの緑●バッジで知らせるシンプル通知スクリプト
 // @author       scarecrowx913x
 // @match        https://chatgpt.com/*
@@ -16,45 +16,35 @@
 (function () {
   'use strict';
 
-  // どれくらい変化が止まったら「完了」とみなすか（ミリ秒）
   var QUIET_MS = 2500;
-
-  // 同じ回答で何度も鳴らないようにするクールダウン（ミリ秒）
   var COOLDOWN_MS = 2000;
 
   var lastMutationTime = 0;
   var doneTimer = null;
-
-  // 回答が進行中かどうか
-  var isAnswering = false;
-
-  // 直近で通知した時刻
   var lastNotifiedAt = 0;
 
-  // 音・通知の個別ON/OFFフラグ（デフォルトは両方ON）
   var soundEnabled = GM_getValue('gptNotifier_soundEnabled', true);
   var notificationEnabled = GM_getValue('gptNotifier_notificationEnabled', true);
 
-  // Observer を二重で付けないためのフラグ
   var observerInitialized = false;
-
-  // AudioContext を1つだけ使い回す
   var audioCtx = null;
-
-  // 元のファビコンとバッジ状態
   var originalFaviconHref = null;
   var faviconBadged = false;
 
-  // ChatGPTのアシスタントメッセージっぽい要素を拾うためのセレクタ
+  // 回答単位の状態を追跡する。
+  // data-message-id がある場合はそれをturn IDとして使い、ない場合だけDOM要素単位のIDを割り当てる。
+  var activeTurn = null;
+  var completedTurnIds = new Set();
+  var fallbackTurnIds = new WeakMap();
+  var fallbackTurnSequence = 0;
+
   var ASSISTANT_SELECTOR = [
     '[data-message-author-role="assistant"]',
     '[data-message-author-role*=assistant]',
-    '[data-message-id][data-message-author-role]',
+    '[data-message-id][data-message-author-role="assistant"]',
     '[data-testid="assistant-message"]'
   ].join(',');
 
-  // 生成中に表示される「Stop」ボタンのセレクタ（複数フォールバック）
-  // v1.3.0: Thinkingモードでの多重通知を防ぐために追加
   var STOP_BUTTON_SELECTOR = [
     'button[data-testid="stop-button"]',
     'button[aria-label="Stop generating"]',
@@ -62,8 +52,6 @@
     '[data-testid="stop-streaming-button"]'
   ].join(',');
 
-  // 生成完了後に表示されるボタン（コピー、評価など）のセレクタ
-  // v1.3.0: 完了確認の二重チェックに使用
   var COMPLETION_BUTTON_SELECTOR = [
     'button[data-testid="copy-turn-action-button"]',
     'button[data-testid="good-response-turn-action-button"]',
@@ -71,12 +59,10 @@
     'button[aria-label*="コピー"]'
   ].join(',');
 
-  // 共通ログ
   function log() {
     console.log.apply(console, ['[GPT-Notifier]'].concat(Array.from(arguments)));
   }
 
-  // Tampermonkey/ViolentMonkey のメニュー登録
   function setupMenu() {
     GM_registerMenuCommand(
       'ビープ音のON/OFFを切り替える',
@@ -101,57 +87,98 @@
     log('メニュー登録済み（音:' + (soundEnabled ? 'ON' : 'OFF') + ', 通知:' + (notificationEnabled ? 'ON' : 'OFF') + '）');
   }
 
-  // -------------------------------------------------------
-  // v1.3.0: 生成中かどうかをStopボタンの有無で判定
-  // Thinkingモードでは「思考フェーズ→回答フェーズ」の切れ目に
-  // 一時的なDOM静止が発生するが、Stopボタンはまだ表示されている。
-  // これを使うことで、静止=完了の誤判定を防ぐ。
-  // -------------------------------------------------------
   function isGenerating() {
     return !!document.querySelector(STOP_BUTTON_SELECTOR);
   }
 
-  // -------------------------------------------------------
-  // v1.3.0: 完了後ボタン（コピー等）が最後のアシスタントメッセージに
-  // 出現しているかどうかで完了を二重確認
-  // -------------------------------------------------------
   function getLastAssistantMessage() {
     var messages = document.querySelectorAll(ASSISTANT_SELECTOR);
     if (!messages || messages.length === 0) return null;
     return messages[messages.length - 1];
   }
 
-  function hasCompletionButtons() {
-    var lastMsg = getLastAssistantMessage();
-    if (!lastMsg) return false;
-    return !!lastMsg.querySelector(COMPLETION_BUTTON_SELECTOR);
+  function getTurnId(message) {
+    if (!message) return null;
+
+    var messageId = message.getAttribute('data-message-id');
+    if (messageId) return 'message:' + messageId;
+
+    if (!fallbackTurnIds.has(message)) {
+      fallbackTurnSequence += 1;
+      fallbackTurnIds.set(message, 'element:' + fallbackTurnSequence);
+    }
+    return fallbackTurnIds.get(message);
   }
 
-  // -------------------------------------------------------
-  // v1.3.0: 完了判定を独立した関数に切り出し
-  // Stopボタンがまだある場合は500msごとに再チェックする。
-  // Thinkingモードの「思考→回答」の空白期間をこれで乗り越える。
-  // -------------------------------------------------------
+  function hasCompletionButtons(message) {
+    if (!message) return false;
+    return !!message.querySelector(COMPLETION_BUTTON_SELECTOR);
+  }
+
+  function beginOrContinueTurn(message, now) {
+    if (!message) return false;
+
+    var lastMessage = getLastAssistantMessage();
+    if (lastMessage !== message) {
+      // 過去回答の再描画やボタン追加は回答開始として扱わない。
+      return false;
+    }
+
+    var turnId = getTurnId(message);
+    if (!turnId || completedTurnIds.has(turnId)) {
+      return false;
+    }
+
+    if (!activeTurn || activeTurn.id !== turnId) {
+      activeTurn = {
+        id: turnId,
+        element: message
+      };
+      log('新しいassistant turnを検知 →', turnId);
+    } else {
+      activeTurn.element = message;
+    }
+
+    lastMutationTime = now;
+    return true;
+  }
+
   function checkCompletion() {
-    // 静止時間がまだ足りない場合はスキップ
+    if (!activeTurn) return;
+
     if (Date.now() - lastMutationTime < QUIET_MS) return;
 
-    // Stopボタンが残っていればまだ生成中（Thinkingモードの思考→回答の空白 or フェーズ切替）
+    var lastMessage = getLastAssistantMessage();
+    var lastTurnId = getTurnId(lastMessage);
+
+    // active turnが最新turnではなくなった場合、古いturnを完了通知しない。
+    if (!lastMessage || lastTurnId !== activeTurn.id) {
+      log('active turnが最新ではないため完了判定を破棄 →', activeTurn.id);
+      activeTurn = null;
+      return;
+    }
+
+    if (completedTurnIds.has(activeTurn.id)) {
+      activeTurn = null;
+      return;
+    }
+
     if (isGenerating()) {
       log('Stopボタンが残っているため待機中（Thinkingモード対応）...');
       doneTimer = setTimeout(checkCompletion, 500);
       return;
     }
 
-    // 完了後ボタンが出ていればより確実に完了と判断（出ていなくても通知はする）
-    if (hasCompletionButtons()) {
+    if (hasCompletionButtons(lastMessage)) {
       log('完了ボタン確認 → 回答完了と判定');
     } else {
       log('完了ボタン未確認だが、Stopボタンも消えているため完了と判定');
     }
 
+    completedTurnIds.add(activeTurn.id);
     notifyDone();
-    isAnswering = false;
+    log('assistant turn完了 →', activeTurn.id);
+    activeTurn = null;
   }
 
   function setupObserver() {
@@ -171,43 +198,56 @@
 
     var observer = new MutationObserver(function (mutations) {
       var now = Date.now();
-      var touchedAssistant = false;
+      var touchedActiveTurn = false;
 
       for (var i = 0; i < mutations.length; i++) {
         var m = mutations[i];
-        var node = m.target;
-        var el = null;
+        var candidates = [];
 
-        if (node.nodeType === Node.TEXT_NODE) {
-          el = node.parentElement;
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-          el = node;
-        } else {
-          continue;
+        if (m.target.nodeType === Node.TEXT_NODE && m.target.parentElement) {
+          candidates.push(m.target.parentElement);
+        } else if (m.target.nodeType === Node.ELEMENT_NODE) {
+          candidates.push(m.target);
         }
 
-        if (!el) continue;
-
-        var host = el.closest(ASSISTANT_SELECTOR);
-        if (host) {
-          touchedAssistant = true;
-          break;
+        if (m.addedNodes && m.addedNodes.length) {
+          for (var j = 0; j < m.addedNodes.length; j++) {
+            var added = m.addedNodes[j];
+            if (added.nodeType === Node.TEXT_NODE && added.parentElement) {
+              candidates.push(added.parentElement);
+            } else if (added.nodeType === Node.ELEMENT_NODE) {
+              candidates.push(added);
+            }
+          }
         }
+
+        for (var k = 0; k < candidates.length; k++) {
+          var el = candidates[k];
+          if (!el) continue;
+
+          var host = null;
+          if (el.matches && el.matches(ASSISTANT_SELECTOR)) {
+            host = el;
+          } else if (el.closest) {
+            host = el.closest(ASSISTANT_SELECTOR);
+          }
+
+          if (!host && el.querySelector) {
+            host = el.querySelector(ASSISTANT_SELECTOR);
+          }
+
+          if (host && beginOrContinueTurn(host, now)) {
+            touchedActiveTurn = true;
+            break;
+          }
+        }
+
+        if (touchedActiveTurn) break;
       }
 
-      if (!touchedAssistant) return;
-
-      if (!isAnswering) {
-        isAnswering = true;
-        log('回答開始っぽい変化を検知');
-      }
-
-      lastMutationTime = now;
+      if (!touchedActiveTurn) return;
 
       if (doneTimer) clearTimeout(doneTimer);
-
-      // v1.3.0: インライン関数→ checkCompletion() に変更
-      // Thinkingモード対応のため、Stopボタンの有無を繰り返しチェックする
       doneTimer = setTimeout(checkCompletion, QUIET_MS + 150);
     });
 
@@ -237,7 +277,6 @@
     }
 
     if (notificationEnabled) {
-      // 通知とバッジはタブが非アクティブ時だけ表示する
       if (document.hidden) {
         showNotification();
         setFaviconBadge(true);
