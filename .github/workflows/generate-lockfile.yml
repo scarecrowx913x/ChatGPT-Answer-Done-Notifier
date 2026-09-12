@@ -22,12 +22,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- package-lock.json; then
+          git add package-lock.json
+          if git diff --cached --quiet; then
             echo "Nothing to commit"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json
           git commit -m "Fix #24: add package-lock.json"
           git push origin HEAD:issue-24-lockfile
