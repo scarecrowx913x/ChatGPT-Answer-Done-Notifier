@@ -91,10 +91,24 @@
     return !!document.querySelector(STOP_BUTTON_SELECTOR);
   }
 
+  function canonicalizeAssistantHost(message) {
+    if (!message) return null;
+
+    var canonical = message;
+    var parent = canonical.parentElement;
+    while (parent) {
+      if (parent.matches && parent.matches(ASSISTANT_SELECTOR)) {
+        canonical = parent;
+      }
+      parent = parent.parentElement;
+    }
+    return canonical;
+  }
+
   function getLastAssistantMessage() {
     var messages = document.querySelectorAll(ASSISTANT_SELECTOR);
     if (!messages || messages.length === 0) return null;
-    return messages[messages.length - 1];
+    return canonicalizeAssistantHost(messages[messages.length - 1]);
   }
 
   function getTurnId(message) {
@@ -118,6 +132,7 @@
   function beginOrContinueTurn(message, now) {
     if (!message) return false;
 
+    message = canonicalizeAssistantHost(message);
     var lastMessage = getLastAssistantMessage();
     if (lastMessage !== message) {
       // 過去回答の再描画やボタン追加は回答開始として扱わない。
@@ -191,9 +206,14 @@
     }
 
     if (!el) return null;
-    if (el.matches && el.matches(ASSISTANT_SELECTOR)) return el;
-    if (el.closest) return el.closest(ASSISTANT_SELECTOR);
-    return null;
+
+    var host = null;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) {
+      host = el;
+    } else if (el.closest) {
+      host = el.closest(ASSISTANT_SELECTOR);
+    }
+    return canonicalizeAssistantHost(host);
   }
 
   function getAssistantHostFromAddedNode(node) {
@@ -206,14 +226,23 @@
     }
 
     if (!el) return null;
-    if (el.matches && el.matches(ASSISTANT_SELECTOR)) return el;
 
-    var closestHost = el.closest ? el.closest(ASSISTANT_SELECTOR) : null;
-    if (closestHost) return closestHost;
+    var host = null;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) {
+      host = el;
+    } else if (el.closest) {
+      host = el.closest(ASSISTANT_SELECTOR);
+    }
+    if (host) return canonicalizeAssistantHost(host);
 
     // 子孫探索は実際に追加されたノードだけに限定する。
     // Mutation targetの祖先から既存の過去回答を拾う誤検知を防ぐ。
-    if (el.querySelector) return el.querySelector(ASSISTANT_SELECTOR);
+    if (el.querySelectorAll) {
+      var descendants = el.querySelectorAll(ASSISTANT_SELECTOR);
+      if (descendants && descendants.length) {
+        return canonicalizeAssistantHost(descendants[descendants.length - 1]);
+      }
+    }
     return null;
   }
 
