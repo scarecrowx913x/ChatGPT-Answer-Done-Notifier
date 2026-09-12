@@ -10,7 +10,9 @@ const SOURCE = RAW_SOURCE
   .replace('var QUIET_MS = 2500;', 'var QUIET_MS = 20;')
   .replace('var COOLDOWN_MS = 2000;', 'var COOLDOWN_MS = 5;')
   .replace('setTimeout(setupObserver, 2000);', 'setTimeout(setupObserver, 0);')
-  .replace('setTimeout(setupObserver, 5000);', 'setTimeout(setupObserver, 0);');
+  .replace('setTimeout(setupObserver, 5000);', 'setTimeout(setupObserver, 0);')
+  .replace('doneTimer = setTimeout(checkCompletion, QUIET_MS + 150);', 'doneTimer = setTimeout(checkCompletion, QUIET_MS + 5);')
+  .replace('doneTimer = setTimeout(checkCompletion, 500);', 'doneTimer = setTimeout(checkCompletion, 10);');
 
 function delay(ms = 35) {
   return new Promise((resolve) => setTimeout(resolve, ms));
