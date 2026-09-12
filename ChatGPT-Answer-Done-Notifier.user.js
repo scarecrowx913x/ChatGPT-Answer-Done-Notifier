@@ -122,6 +122,46 @@
     return false;
   }
 
+  function mutationsRemoveStopButton(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (!m.removedNodes || !m.removedNodes.length) continue;
+
+      for (var j = 0; j < m.removedNodes.length; j++) {
+        if (nodeContainsStopButton(m.removedNodes[j])) return true;
+      }
+    }
+
+    return false;
+  }
+
+  function addedNodeContainsAssistant(node) {
+    var el = null;
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      el = node;
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      el = node.parentElement;
+    }
+
+    if (!el) return false;
+    if (el.matches && el.matches(ASSISTANT_SELECTOR)) return true;
+    return !!(el.querySelector && el.querySelector(ASSISTANT_SELECTOR));
+  }
+
+  function mutationsAddAssistant(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (!m.addedNodes || !m.addedNodes.length) continue;
+
+      for (var j = 0; j < m.addedNodes.length; j++) {
+        if (addedNodeContainsAssistant(m.addedNodes[j])) return true;
+      }
+    }
+
+    return false;
+  }
+
   function resetTrackingOnNavigation() {
     var currentLocation = window.location.href;
     if (currentLocation === observedLocation) return;
@@ -322,6 +362,19 @@
       resetTrackingOnNavigation();
       if (mutationsShowGeneration(mutations)) {
         generationObserved = true;
+      }
+
+      // Stopボタンだけ観測した後、assistant turn生成前にキャンセル/失敗した場合、
+      // generationObservedを残さない。過去assistantの後続DOM変更を新規turnと誤認するのを防ぐ。
+      if (
+        generationObserved &&
+        !activeTurn &&
+        !isGenerating() &&
+        mutationsRemoveStopButton(mutations) &&
+        !mutationsAddAssistant(mutations)
+      ) {
+        generationObserved = false;
+        log('assistant turn開始前に生成終了 → generation stateをクリア');
       }
 
       for (var i = 0; i < mutations.length; i++) {
