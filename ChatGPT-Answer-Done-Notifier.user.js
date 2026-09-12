@@ -346,9 +346,9 @@
       return;
     }
 
-    var target = document.querySelector('main') || document.body;
+    var target = document.body;
     if (!target) {
-      log('ターゲット要素が見つからないのでリトライ');
+      log('document.bodyが見つからないのでリトライ');
       setTimeout(setupObserver, 2000);
       return;
     }
