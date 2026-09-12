@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "check": "node --check ChatGPT-Answer-Done-Notifier.user.js",
-    "test": "node --test test/notifier.test.js"
+    "test": "node --test test/*.test.js"
   },
   "devDependencies": {
     "jsdom": "25.0.1"

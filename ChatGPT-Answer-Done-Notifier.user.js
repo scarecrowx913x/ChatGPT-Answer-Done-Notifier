@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         ChatGPT Answer Done Notifier
 // @namespace    https://github.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier
-// @version      1.4.0
+// @version      1.5.0
 // @description  ChatGPTの回答完了を検知して、ビープ音＋デスクトップ通知＋ファビコンの緑●バッジで知らせるシンプル通知スクリプト
 // @author       scarecrowx913x
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
+// @updateURL    https://raw.githubusercontent.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/main/ChatGPT-Answer-Done-Notifier.user.js
+// @downloadURL  https://raw.githubusercontent.com/scarecrowx913x/ChatGPT-Answer-Done-Notifier/main/ChatGPT-Answer-Done-Notifier.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -18,6 +20,7 @@
 
   var QUIET_MS = 2500;
   var COOLDOWN_MS = 2000;
+  var MAX_COMPLETED_TURNS = 100;
 
   var lastMutationTime = 0;
   var doneTimer = null;
@@ -35,6 +38,7 @@
   // data-message-id がある場合はそれをturn IDとして使い、ない場合だけDOM要素単位のIDを割り当てる。
   var activeTurn = null;
   var completedTurnIds = new Set();
+  var completedTurnQueue = [];
   var fallbackTurnIds = new WeakMap();
   var fallbackTurnSequence = 0;
   var generationObserved = false;
@@ -65,6 +69,44 @@
     console.log.apply(console, ['[GPT-Notifier]'].concat(Array.from(arguments)));
   }
 
+  function notificationPermissionMessage(permission) {
+    if (permission === 'granted') {
+      return 'デスクトップ通知は許可済みです';
+    }
+    if (permission === 'denied') {
+      return 'デスクトップ通知は拒否されています。ブラウザのサイト設定から通知を許可してください';
+    }
+    return 'デスクトップ通知の許可状態は未設定です';
+  }
+
+  function requestNotificationPermission() {
+    if (!('Notification' in window)) {
+      alert('このブラウザはデスクトップ通知に対応していません');
+      return;
+    }
+
+    if (Notification.permission !== 'default') {
+      alert(notificationPermissionMessage(Notification.permission));
+      return;
+    }
+
+    try {
+      var result = Notification.requestPermission();
+      if (result && typeof result.then === 'function') {
+        result.then(function (permission) {
+          alert(notificationPermissionMessage(permission));
+          log('デスクトップ通知の権限状態 →', permission);
+        }).catch(function (error) {
+          console.warn('デスクトップ通知の権限要求に失敗', error);
+          alert('デスクトップ通知の権限要求に失敗しました');
+        });
+      }
+    } catch (error) {
+      console.warn('デスクトップ通知の権限要求に失敗', error);
+      alert('デスクトップ通知の権限要求に失敗しました');
+    }
+  }
+
   function setupMenu() {
     GM_registerMenuCommand(
       'ビープ音のON/OFFを切り替える',
@@ -84,6 +126,11 @@
         alert('ChatGPTのデスクトップ通知は今 ' + (notificationEnabled ? 'ON' : 'OFF') + ' です');
         log('デスクトップ通知の状態を切り替えました →', notificationEnabled ? 'ON' : 'OFF');
       }
+    );
+
+    GM_registerMenuCommand(
+      'デスクトップ通知を許可する',
+      requestNotificationPermission
     );
 
     log('メニュー登録済み（音:' + (soundEnabled ? 'ON' : 'OFF') + ', 通知:' + (notificationEnabled ? 'ON' : 'OFF') + '）');
@@ -214,6 +261,18 @@
     return !!message.querySelector(COMPLETION_BUTTON_SELECTOR);
   }
 
+  function rememberCompletedTurn(turnId) {
+    if (!turnId || completedTurnIds.has(turnId)) return;
+
+    completedTurnIds.add(turnId);
+    completedTurnQueue.push(turnId);
+
+    while (completedTurnQueue.length > MAX_COMPLETED_TURNS) {
+      var expiredTurnId = completedTurnQueue.shift();
+      completedTurnIds.delete(expiredTurnId);
+    }
+  }
+
   function beginOrContinueTurn(message, now) {
     if (!message) return false;
 
@@ -283,7 +342,7 @@
       log('完了ボタン未確認だが、Stopボタンも消えているため完了と判定');
     }
 
-    completedTurnIds.add(activeTurn.id);
+    rememberCompletedTurn(activeTurn.id);
     notifyDone();
     log('assistant turn完了 →', activeTurn.id);
     activeTurn = null;
@@ -537,14 +596,15 @@
   function showNotification() {
     if (!('Notification' in window)) return;
 
-    if (Notification.permission === 'granted') {
-      new Notification('ChatGPT', {
-        body: '回答の生成が終わったよ 🎉',
-        tag: 'chatgpt-answer-done'
-      });
-    } else if (Notification.permission === 'default') {
-      Notification.requestPermission();
+    if (Notification.permission !== 'granted') {
+      log('デスクトップ通知権限が未許可のためスキップ →', Notification.permission);
+      return;
     }
+
+    new Notification('ChatGPT', {
+      body: '回答の生成が終わったよ 🎉',
+      tag: 'chatgpt-answer-done'
+    });
   }
 
   window.addEventListener('load', function () {
